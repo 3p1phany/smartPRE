@@ -1,144 +1,172 @@
 # smartPRE
 
-CPU/Memory 协同仿真研究平台，用于研究 DRAM 行缓冲管理（Row Buffer Management）策略。基于 ChampSim 周期精确 CPU 模拟器和 DRAMSim3 详细 DRAM 模拟器构建。
+A research framework for studying **smart DRAM Row Buffer Precharge** strategies based on program behavior characteristics.
 
-## 项目结构
+## Overview
+
+smartPRE investigates the correlation between program execution patterns (PC signatures) and optimal DRAM row buffer timeout values. By analyzing this relationship, we aim to develop dynamic timeout policies that adapt to changing memory access patterns.
+
+### Key Research Questions
+
+- Can program counter (PC) signatures predict optimal row buffer timeout?
+- How does timeout affect performance (IPC) and row buffer hit rate (RBHR)?
+- Is there a correlation between PC pattern changes and optimal timeout transitions?
+
+## Architecture
 
 ```
 smartPRE/
-├── champsim-la/          ChampSim CPU 模拟器（LoongArch ISA）
-│   ├── src/              核心仿真代码（流水线、缓存、内存控制器）
-│   ├── loongarch/        LoongArch 指令解码器
-│   ├── prefetcher/       预取器模块（12 种：stride, berti, spp_dev, bop 等）
-│   ├── branch/           分支预测器（5 种：tage-sc-l, perceptron 等）
-│   ├── btb/              分支目标缓冲（basic_btb）
-│   ├── replacement/      缓存替换策略（4 种：lru, drrip, ship, srrip）
-│   ├── dramsim3_configs/ 实验用 DRAM 时序配置
-│   ├── scripts/          构建、运行、分析脚本
-│   ├── batch_run/        批量并行任务管理
-│   └── results/          仿真结果
-├── dramsim3/             DRAMSim3 内存系统模拟器
-│   ├── src/              模拟器核心
-│   └── configs/          90+ DRAM 时序配置（DDR3/4/5, GDDR, HBM, LPDDR）
-└── docs/                 研究文档
-    ├── design/           机制设计文档
-    ├── experiments/      实验方案（GS, FAPS-3D, GS-ML, RL-PAGE）
-    ├── analysis/         分析结果
-    └── references/       参考文献
+├── champsim-la/          # ChampSim CPU simulator (LoongArch port)
+├── dramsim3/             # Modified DRAMSim3 with epoch statistics
+└── scripts/              # Experiment and analysis scripts
 ```
 
-## 研究方向
+### Components
 
-本项目聚焦 **DRAM 行缓冲管理策略**的优化——即在 row-hit cluster 结束后，何时关闭行缓冲（precharge）的决策问题。当前实现和对比的策略包括：
+| Component | Description | Repository |
+|-----------|-------------|------------|
+| **champsim-la** | ChampSim with LoongArch support and epoch instrumentation | [mychampsim](https://github.com/3p1phany/mychampsim) |
+| **dramsim3** | DRAMSim3 with row buffer statistics and static timeout policy | [myDRAMsim](https://github.com/3p1phany/myDRAMsim) |
 
-| 策略 | 方法 | 核心思路 |
-|------|------|----------|
-| **Global Scoreboarding (GS)** | Shadow simulation | 并行模拟 7 个候选 timeout 值，每 30K 周期选最优；RE Store 保护热行 |
-| **FAPS-3D** | 2-bit 饱和计数器 FSM | 根据 row-buffer hit rate 在 open-page/close-page 间动态切换 |
-| **DYMPL (GS-ML)** | 感知机预测 | 用轻量感知机替代 shadow simulation，消除 timeout 上限和仲裁延迟 |
-| **RL-PAGE** | SARSA + CMAC | 在线强化学习，从 data bus utilization 长期奖励信号中学习预充电策略 |
+## Getting Started
 
-详细文档见 [docs/README.md](docs/README.md)。
+### Prerequisites
 
-## 构建
+- GCC/G++ with C++17 support
+- GNU Make
+- Python 3.8+ with numpy, pandas, matplotlib
+- GNU Parallel (optional, for parallel experiments)
 
-### 前置条件
-
-- GCC（支持 C++17）
-- CMake 3.0+
-- Python 3
-
-### 1. 构建 DRAMSim3
+### Clone with Submodules
 
 ```bash
+git clone --recursive https://github.com/3p1phany/smartPRE.git
+cd smartPRE
+```
+
+Or if already cloned:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Build
+
+```bash
+# Build DRAMSim3
 cd dramsim3
-mkdir -p build && cd build && cmake ..
-make -j8
-```
+make -j$(nproc)
+cd ..
 
-### 2. 构建 ChampSim-LA
-
-```bash
+# Build ChampSim (normal mode)
 cd champsim-la
-python3 config.sh champsim_config.json
-make -j8
+make -j$(nproc)
+cd ..
+
+# Or build with epoch statistics enabled (for experiments)
+./scripts/build_with_epoch_stats.sh
 ```
 
-### 一键构建
+## Experiments
+
+### Oracle Timeout Sweep
+
+The main experiment sweeps through multiple static timeout values to find the optimal timeout for each execution epoch.
+
+#### Collected Metrics
+
+| Metric | Description | Collection Point |
+|--------|-------------|------------------|
+| **Epoch ID** | Time window number (per 10K instructions) | `main.cc` |
+| **PC Hash** | XOR hash of memory access PCs | `dramsim3_wrapper.hpp` |
+| **RBHR** | Row Buffer Hit Rate | `controller.cc` |
+| **IPC** | Instructions Per Cycle | `main.cc` |
+
+#### Running the Experiment
 
 ```bash
-cd champsim-la
-DRAMSIM3_ROOT=/root/data/smartPRE/dramsim3 python3 scripts/build_with_dramsim3.sh
+# Set trace directory
+export TRACE_ROOT=/path/to/traces
+
+# Run sweep (8 traces x 20 timeout values = 160 tasks)
+./scripts/run_timeout_sweep.sh
+
+# Analyze results
+python3 ./scripts/analyze_oracle_sweep.py
 ```
 
-## 运行仿真
+#### Configuration
 
-运行前需设置动态链接库路径：
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `WARMUP` | 20M | Warmup instructions |
+| `SIM` | 50M | Simulation instructions |
+| `JOBS` | 128 | Parallel jobs |
+| `TIMEOUT_VALUES` | 20-400 (step 20) | Timeout values to sweep |
 
-```bash
-export LD_LIBRARY_PATH=/root/data/smartPRE/dramsim3:$LD_LIBRARY_PATH
+### Output Structure
+
+```
+results/
+├── oracle_sweep/
+│   ├── configs/                    # Generated DRAM configs
+│   ├── <trace_name>/
+│   │   └── timeout_<N>/
+│   │       ├── run.log             # Full simulation log
+│   │       └── epoch_stats.csv     # Epoch data
+│   └── tasks.txt
+└── analysis/
+    ├── <trace>_oracle_analysis.png # Visualization
+    ├── <trace>_oracle.csv          # Oracle timeout sequence
+    └── summary_stats.csv           # Correlation statistics
 ```
 
-### 快速测试（选定 slice）
+## Methodology
 
-```bash
-cd champsim-la
-bash scripts/run_selected_slices.sh
+### Epoch Statistics
+
+Each epoch (10K instructions) records:
+
+```
+[EPOCH] epoch_id,pc_hash,rbhr,ipc
+[EPOCH] 0,0x120000efc,0.0000,3.171672
+[EPOCH] 1,0x3c,0.9905,1.271872
 ```
 
-### 完整 benchmark 套件
+### PC Hash Calculation
 
-```bash
-cd champsim-la
-bash scripts/run_benchmarks.sh
+The PC hash captures memory access patterns by XOR-accumulating the program counters of all instructions that reach DRAM:
+
+```cpp
+// At DRAM entry point
+epoch_pc_hash ^= packet->ip;
 ```
 
-### 批量并行运行
+### Oracle Analysis
 
-```bash
-cd champsim-la/batch_run
-python3 run.py
-```
+For each epoch, the analysis script:
+1. Compares IPC across all timeout values
+2. Identifies the best-performing timeout
+3. Computes PC signature change rate (Hamming distance)
+4. Calculates correlation between PC changes and timeout transitions
 
-## 结果分析
+## Benchmarks
 
-```bash
-# 汇总 IPC 结果
-python3 scripts/summarize_ipc.py results/<config_name>/
+The framework includes traces from memory-intensive workloads:
 
-# 对比两组配置的 IPC
-python3 scripts/compare_ipc.py results/<baseline>/ results/<experiment>/
-```
+- **Graph500** - BFS on scale-16 graph
+- **Ligra** - MIS algorithm on Higgs dataset
+- **CRONO** - PageRank and Connected Components
+- **HashJoin** - Database join operations
+- **HPCC** - Random Access benchmark
+- **NPB** - Integer Sort (Class B)
+- **SpMV** - Sparse matrix-vector multiplication
 
-## 仿真配置
+## References
 
-仿真参数通过 JSON 配置文件定义：
+- [ChampSim](https://github.com/ChampSim/ChampSim) - CPU trace simulator
+- [DRAMSim3](https://github.com/umd-memsys/DRAMsim3) - DRAM timing simulator
 
-| 配置文件 | 用途 |
-|----------|------|
-| `champsim_config.json` | 单核基线（4GHz, ROB 350, DDR5-4800） |
-| `champsim_config_4c.json` | 4 核配置 |
-| `champsim_config_8C.json` | 8 核配置 |
-| `champsim_config_FAPS.json` | FAPS-3D 实验 |
-| `champsim_config_RLPAGE.json` | RL-PAGE 实验 |
+## License
 
-修改配置后需重新运行 `python3 config.sh <config>.json` 生成 Makefile 和头文件。
-
-## Benchmark 工作负载
-
-Trace 驱动仿真，支持以下 benchmark 套件：
-
-- SPEC CPU2006 / CPU2017
-- CRONO 图算法
-- LIGRA 图处理框架
-- PARSEC 并行计算
-- CloudSuite 云服务
-
-Benchmark 元数据定义在 `champsim-la/benchmarks.tsv`（全集，1733 条）和 `benchmarks_selected.tsv`（精选子集，799 条）中。
-
-## 技术要点
-
-- ChampSim 使用 C++17，DRAMSim3 使用 C++11
-- ChampSim 的 Makefile 由 `config.sh` 自动生成，不要手动编辑
-- DRAMSim3 通过 `inc/dramsim3_wrapper.hpp` 与 ChampSim 集成，实现周期精确的协同仿真
-- 模块系统通过 `-D` 编译宏重命名符号，允许多个同类模块（预取器、替换策略等）共存
+This project is for academic research purposes.
