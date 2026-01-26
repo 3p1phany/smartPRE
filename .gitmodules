@@ -1,0 +1,6 @@
+[submodule "champsim-la"]
+	path = champsim-la
+	url = https://github.com/3p1phany/mychampsim.git
+[submodule "dramsim3"]
+	path = dramsim3
+	url = https://github.com/3p1phany/myDRAMsim.git

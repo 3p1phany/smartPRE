@@ -1,0 +1,16 @@
+# Build outputs
+build/
+
+# Experiment results
+results/
+
+# Large data files
+ddrepoch.json
+ddr.json
+ddr.txt
+
+# IDE
+.vscode/
+
+# Claude
+.claude/
