@@ -3,6 +3,10 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 You are a highly professional expert in computer architecture and memory system, especially in DRAM.
 
+## CAUTION
+Read the docs in docs/ directory before doing anything.
+When you need to report performance data, you must report the performance improvement of each benchmark. Do not only report the GEOMEAN improvement of all benchmarks. This GEOMEAN is likely to be hurt by certain benchmarks that I will not include in my paper.
+
 ## Project Overview
 
 smartPRE is a CPU/memory co-simulation research project combining two submodules:
