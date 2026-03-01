@@ -192,14 +192,28 @@ if(top_row_buf_policy_==RowBufPolicy::FAPS){
 }
 ```
 
-#### 1.3h FinishRefresh() 中重置 FAPS 状态（line 266-271 的 for 循环中）
+#### 1.3h FinishRefresh() 中跳过 FAPS 计数器清零
 
-在 `demand_row_hit_count_[i]=0;` (line 270) 之后添加：
+FAPS 使用 per-bank 访问计数驱动 epoch（需累积 1000 次访问），而 `FinishRefresh()` 原有逻辑在每次 refresh 时清零 `total_command_count_` 等计数器。在 DDR5 配置下（tREFI=9360 cycles，32 bank），每个 bank 在两次 refresh 之间最多只能接收约 36 个命令，远不及 1000 的阈值，导致 epoch 永远无法触发。
+
+原有 DPM 策略使用全局 cycle-based epoch（每 1000 cycle），不依赖 `total_command_count_` 累积到阈值，因此 refresh 时清零对 DPM 无影响。但 FAPS 不同，**原论文中也没有在 refresh 时重置计数器的描述**。
+
+修改 `FinishRefresh()` 中的清零逻辑，对 FAPS 跳过计数器清零：
 
 ```cpp
-if (top_row_buf_policy_ == RowBufPolicy::FAPS) {
-    faps_bank_state_[i].potential_hit_count = 0;
-}
+if (cmd.IsRefresh()) {
+    //clear refresh related victims.
+    for(auto i:ref_q_indices_){
+        victim_cmds_[i].clear();
+        // FAPS uses per-bank access-count epoch; do NOT reset
+        // counters on refresh, otherwise the epoch threshold
+        // (1000 accesses) can never be reached between refreshes.
+        if (top_row_buf_policy_ != RowBufPolicy::FAPS) {
+            total_command_count_[i]=0;
+            true_row_hit_count_[i]=0;
+            demand_row_hit_count_[i]=0;
+        }
+    }
 ```
 
 ### 1.4 `dramsim3/src/controller.cc` (line 19-25, 31-36)
@@ -321,7 +335,7 @@ python3 scripts/compare_ipc.py results/GS_1c results/FAPS_1c
 |------|--------|------|
 | `dramsim3/src/common.h:10` | 1 行 | 添加 FAPS 到枚举 |
 | `dramsim3/src/command_queue.h` | ~15 行 | 添加常量、结构体、成员声明 |
-| `dramsim3/src/command_queue.cc` | ~70 行 | 构造函数初始化、FAPS_TrackAccess、FAPS_ArbitratePagePolicy、ClockTick 集成 |
+| `dramsim3/src/command_queue.cc` | ~70 行 | 构造函数初始化、FAPS_TrackAccess、FAPS_ArbitratePagePolicy、ClockTick 集成、FinishRefresh 跳过 FAPS 计数器清零 |
 | `dramsim3/src/controller.cc` | 2 行 | 添加 "FAPS" string 映射 |
 | `dramsim3/src/simple_stats.cc` | ~6 行 | 注册 FAPS 统计计数器 |
 | `champsim-la/dramsim3_configs/DDR5_64GB_4ch_4800_FAPS.ini` | 新文件 | DRAM 配置 |
@@ -335,3 +349,5 @@ python3 scripts/compare_ipc.py results/GS_1c results/FAPS_1c
 2. **Per-bank epoch 而非全局 cycle epoch**：FAPS 的核心创新。通过在 `FAPS_ArbitratePagePolicy()` 中检查 `total_command_count_[i] >= FAPS_EPOCH_ACCESSES` 实现。高访问率 bank 更频繁地评估策略，低访问率 bank 评估频率低。
 
 3. **Hit rate 计算使用整数比较**：避免浮点除法（论文提到除法开销大）。`hit < total/4` 等价于 `hit_rate < 0.25`，`potential * 4 >= total * 3` 等价于 `pbhr >= 0.75`。
+
+4. **FinishRefresh() 不清零 FAPS 计数器**：原有 DPM 在 refresh 时清零 `total_command_count_` 等计数器，因为 DPM 使用 cycle-based epoch（每 1000 cycle），不依赖计数器累积。但 FAPS 使用 per-bank access-count epoch（需累积 1000 次访问），在 DDR5 配置下（tREFI=9360 cycles，32 bank），refresh 间隔内每个 bank 最多约 36 次访问，如果在 refresh 时清零则 epoch 永远无法触发。FAPS 原论文中也没有在 refresh 时重置计数器的描述，因此对 FAPS 跳过清零。
