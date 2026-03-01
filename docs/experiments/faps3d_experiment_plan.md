@@ -191,37 +191,28 @@ if(row_hit_count==1){
 }
 ```
 
-**修改方案**: 将 command-queue-only 的计数在扫描 transaction buffer 之前保存，供 FAPS 使用:
+#### 1.3h FinishRefresh() 中跳过 FAPS 计数器清零
+
+FAPS 使用 per-bank 访问计数驱动 epoch（需累积 1000 次访问），而 `FinishRefresh()` 原有逻辑在每次 refresh 时清零 `total_command_count_` 等计数器。在 DDR5 配置下（tREFI=9360 cycles，32 bank），每个 bank 在两次 refresh 之间最多只能接收约 36 个命令，远不及 1000 的阈值，导致 epoch 永远无法触发。
+
+原有 DPM 策略使用全局 cycle-based epoch（每 1000 cycle），不依赖 `total_command_count_` 累积到阈值，因此 refresh 时清零对 DPM 无影响。但 FAPS 不同，**原论文中也没有在 refresh 时重置计数器的描述**。
+
+修改 `FinishRefresh()` 中的清零逻辑，对 FAPS 跳过计数器清零：
+
 ```cpp
-int row_hit_count=0;
-row_hit_count += std::count_if(queue.begin(),queue.end(),
-    [&cmd](Command x){return x.Row() == cmd.Row() ;});
-
-// FAPS: use command-queue-only count for close-page precharge decision
-int row_hit_count_cmdq = row_hit_count;
-
-// ... existing write_buffer / read_queue scan (line 158-183) ...
-
-// FAPS close-page: decide based on command queue only (paper Section 4.3)
-if(top_row_buf_policy_==RowBufPolicy::FAPS
-   && row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE
-   && row_hit_count_cmdq==1){
-    cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                   cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
-    autoPRE_added=true;
-}
-// Other policies: use full row_hit_count (including transaction buffers)
-else if(row_hit_count==1){
-    // ... existing GS / CRAFT / ABP / DYMPL / RL_PAGE logic (unchanged) ...
-    // Note: SMART_CLOSE check here should exclude FAPS to avoid double handling
-    if(row_buf_policy_[queue_idx_] == RowBufPolicy::SMART_CLOSE
-       && top_row_buf_policy_ != RowBufPolicy::FAPS){
-        cmd.cmd_type = cmd.cmd_type==CommandType::READ ? CommandType::READ_PRECHARGE:
-                       cmd.cmd_type==CommandType::WRITE? CommandType::WRITE_PRECHARGE:cmd.cmd_type;
-        autoPRE_added=true;
+if (cmd.IsRefresh()) {
+    //clear refresh related victims.
+    for(auto i:ref_q_indices_){
+        victim_cmds_[i].clear();
+        // FAPS uses per-bank access-count epoch; do NOT reset
+        // counters on refresh, otherwise the epoch threshold
+        // (1000 accesses) can never be reached between refreshes.
+        if (top_row_buf_policy_ != RowBufPolicy::FAPS) {
+            total_command_count_[i]=0;
+            true_row_hit_count_[i]=0;
+            demand_row_hit_count_[i]=0;
+        }
     }
-    // ... rest unchanged ...
-}
 ```
 
 ### 3.3 其他文件（无需修改）
@@ -316,8 +307,12 @@ python3 scripts/compare_ipc.py results/GS_1c results/FAPS_1c
 
 | 文件 | 修改量 | 性质 |
 |------|--------|------|
-| `dramsim3/src/command_queue.cc` — `FAPS_TrackAccess()` | ~3 行 | 修正差异1: `last_accessed_row` 仅在 close-page 更新 |
-| `dramsim3/src/command_queue.cc` — `GetCommandToIssue()` | ~15 行 | 修正差异2: FAPS close-page 仅基于 command queue 决策 |
+| `dramsim3/src/common.h:10` | 1 行 | 添加 FAPS 到枚举 |
+| `dramsim3/src/command_queue.h` | ~15 行 | 添加常量、结构体、成员声明 |
+| `dramsim3/src/command_queue.cc` | ~70 行 | 构造函数初始化、FAPS_TrackAccess、FAPS_ArbitratePagePolicy、ClockTick 集成、FinishRefresh 跳过 FAPS 计数器清零 |
+| `dramsim3/src/controller.cc` | 2 行 | 添加 "FAPS" string 映射 |
+| `dramsim3/src/simple_stats.cc` | ~6 行 | 注册 FAPS 统计计数器 |
+| `champsim-la/dramsim3_configs/DDR5_64GB_4ch_4800_FAPS.ini` | 新文件 | DRAM 配置 |
 
 总计约 **18 行** 修改的 C++ 代码。
 
@@ -327,10 +322,6 @@ python3 scripts/compare_ipc.py results/GS_1c results/FAPS_1c
 
 1. **Close-page 使用 SMART_CLOSE**: 论文原文明确描述 close-page 为 "precharge when no pending same-row requests"，这与 SMART_CLOSE 的 `row_hit_count==1` 检查语义一致。SMART_CLOSE **不是** 对论文的近似，而是**精确实现**。
 
-2. **`row_hit_count==1` 不等于 "队列只有一个请求"**: `row_hit_count` 统计的是与当前 cmd **同 row** 的请求数（包含 cmd 自身）。`row_hit_count==1` 表示 "当前命令是队列中唯一目标为该 row 的请求"。队列中可以有任意数量的请求，只要它们目标是其他 row。
+3. **Hit rate 计算使用整数比较**：避免浮点除法（论文提到除法开销大）。`hit < total/4` 等价于 `hit_rate < 0.25`，`potential * 4 >= total * 3` 等价于 `pbhr >= 0.75`。
 
-3. **Per-bank epoch**: FAPS 的核心创新。通过 `total_command_count_[i] >= FAPS_EPOCH_ACCESSES` 判断。高访问率 bank 更频繁评估策略。
-
-4. **FinishRefresh() 不清零 FAPS 计数器**: DDR5 tREFI=9360 cycles 下每个 bank 在两次 refresh 间最多约 36 次访问，远不及 1000 阈值。论文也未描述 refresh 时重置。
-
-5. **差异 2 的权衡**: 修正后 FAPS close-page bank 仅看 command queue，可能导致更频繁的 "precharge 后马上又 activate 同一 row"（因为 transaction buffer 中的同 row 事务还没调度进来）。但这更忠实于论文描述。如果性能显著下降，可回退此修改。
+4. **FinishRefresh() 不清零 FAPS 计数器**：原有 DPM 在 refresh 时清零 `total_command_count_` 等计数器，因为 DPM 使用 cycle-based epoch（每 1000 cycle），不依赖计数器累积。但 FAPS 使用 per-bank access-count epoch（需累积 1000 次访问），在 DDR5 配置下（tREFI=9360 cycles，32 bank），refresh 间隔内每个 bank 最多约 36 次访问，如果在 refresh 时清零则 epoch 永远无法触发。FAPS 原论文中也没有在 refresh 时重置计数器的描述，因此对 FAPS 跳过清零。
