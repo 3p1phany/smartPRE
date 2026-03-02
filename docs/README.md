@@ -1,67 +1,57 @@
-# Global Scoreboarding (GS) 研究文档
+# DRAM 行缓冲管理研究文档
 
-本目录包含 GS DRAM 行缓冲管理机制的设计、实验与分析文档。
+本目录包含 DRAM 行缓冲管理机制（Row Buffer Management）的设计、实验与分析文档，涵盖 Global Scoreboarding (GS)、FAPS-3D、GS-ML 混合、RL-PAGE 等多种策略。
 
 ## 目录结构
 
 ```
 docs/
-├── design/        设计文档（机制原理、计数器定义、改进方向）
-├── experiments/   实验方案（实验设计、实现计划、配置筛选）
-├── analysis/      分析结果（消融实验、profiling 数据、结果评估）
+├── design/        设计文档（机制原理、计数器定义）
+├── experiments/   实验方案（GS baseline、FAPS-3D、GS-ML、RL-PAGE）
+├── analysis/      分析结果（消融实验、profiling 数据、存储开销对比）
 └── references/    参考文献（PDF）
 ```
 
 ## 推荐阅读顺序
 
-### 1. 基础设计
+### 1. GS 基础设计
 
 | 文件 | 内容 |
 |------|------|
 | [design/gs_implementation.md](design/gs_implementation.md) | GS 机制全解：timeout 预充电、shadow simulation 多候选仲裁、RE Store 热行保护 |
 | [design/gs_accuracy_counters.md](design/gs_accuracy_counters.md) | 性能计数器的实现规格，用于衡量 timeout 决策准确率和 RE Store 有效性 |
 
-### 2. 基线分析
+### 2. GS 基线分析
 
 | 文件 | 内容 |
 |------|------|
 | [analysis/GS_NOHOTROW_analysis.md](analysis/GS_NOHOTROW_analysis.md) | RE Store 消融实验：去除热行保护导致 3.1% 性能回归，证明 RE Store 不可或缺 |
-| [analysis/gs_profiling_analysis.md](analysis/gs_profiling_analysis.md) | 62 benchmarks 计数器数据分析：90.5% timeout 准确率、71.3% RE 准确率、18x RE hit 乘数，识别出 13 个受 800c timeout 上限瓶颈的 benchmark |
+| [analysis/gs_profiling_analysis.md](analysis/gs_profiling_analysis.md) | 62 benchmarks 计数器数据分析：90.5% timeout 准确率、71.3% RE 准确率、18x RE hit 乘数 |
 
-### 3. 改进规划
-
-| 文件 | 内容 |
-|------|------|
-| [design/gs_improvement_directions.md](design/gs_improvement_directions.md) | 8 个改进方向及优先级排序，基于 profiling 数据的发现 |
-| [experiments/re_driven_timeout_escalation.md](experiments/re_driven_timeout_escalation.md) | RE 驱动超时升级实验的完整 4 阶段设计：参数空间、21 组配置、6 个可验证假设 |
-
-### 4. Phase 1 实现与评估
+### 3. 对比策略实验方案
 
 | 文件 | 内容 |
 |------|------|
-| [experiments/phase1_implementation_plan.md](experiments/phase1_implementation_plan.md) | Phase 1 代码级实现方案：涉及 4 个源文件的修改细节和 8 组参数配置 |
-| [analysis/phase1_results_analysis.md](analysis/phase1_results_analysis.md) | Phase 1 实验结果：所有配置均出现回归（GEOMEAN -0.10% ~ -0.23%），升级机制净有害 |
+| [experiments/faps3d_experiment_plan.md](experiments/faps3d_experiment_plan.md) | FAPS-3D：基于 2-bit 饱和计数器 FSM 的反馈式自适应页管理方案 |
+| [experiments/gs_ml_hybrid_experiment_plan.md](experiments/gs_ml_hybrid_experiment_plan.md) | GS-ML：用轻量感知机替代 shadow simulation，消除 800c timeout 上限和 30K 周期仲裁延迟 |
+| [experiments/rl_page_prediction_experiment_plan.md](experiments/rl_page_prediction_experiment_plan.md) | RL-PAGE：SARSA + CMAC 函数逼近的在线强化学习页策略预测 |
 
-### 5. 消融验证
-
-| 文件 | 内容 |
-|------|------|
-| [experiments/gs_ext_timeout_only_plan.md](experiments/gs_ext_timeout_only_plan.md) | 消融实验设计：通过 `GS_NO_ESCALATION` 宏隔离扩展候选集 vs 升级机制的影响 |
-| [analysis/gs_ext_timeout_only_analysis.md](analysis/gs_ext_timeout_only_analysis.md) | 消融结果：仅扩展候选集对性能几乎无影响（+0.01%），回归来自升级机制本身 |
-
-### 6. 配置筛选
+### 4. 存储开销对比
 
 | 文件 | 内容 |
 |------|------|
-| [experiments/selected_configs_benchmarks.md](experiments/selected_configs_benchmarks.md) | 筛选出 4 组有效配置和 11 个升级确实有益的 benchmark |
+| [analysis/storage_overhead_comparison.md](analysis/storage_overhead_comparison.md) | GS / FAPS-3D / DYMPL / RL-PAGE 四种策略的硬件存储开销量化对比 |
 
 ## 参考文献
 
 | 文件 | 内容 |
 |------|------|
 | [references/Global scoreboarding实现方案.pdf](references/Global%20scoreboarding实现方案.pdf) | GS 实现方案参考 |
-| [references/Srikanth 等 - 2018 - Tackling memory access latency...pdf](references/Srikanth%20等%20-%202018%20-%20Tackling%20memory%20access%20latency%20through%20DRAM%20row%20management.pdf) | 论文：通过 DRAM 行管理解决内存访问延迟 |
+| [references/Srikanth 等 - 2018 - Tackling memory access latency...pdf](references/Srikanth%20等%20-%202018%20-%20Tackling%20memory%20access%20latency%20through%20DRAM%20row%20management.pdf) | 通过 DRAM 行管理解决内存访问延迟 |
+| [references/Rafique和Zhu - 2019 - FAPS-3D...pdf](references/Rafique和Zhu%20-%202019%20-%20FAPS-3D%20feedback-directed%20adaptive%20page%20management%20scheme%20for%203D-stacked%20DRAM.pdf) | FAPS-3D：面向 3D 堆叠 DRAM 的反馈式自适应页管理 |
+| [references/Rafique和Zhu - 2022 - Dynamic Page Policy...pdf](references/Rafique和Zhu%20-%202022%20-%20Dynamic%20Page%20Policy%20Using%20Perceptron%20Learning.pdf) | DYMPL：基于感知机学习的动态页策略 |
+| [references/Ipek et al. - 2008 - Self-Optimizing Memory Controllers...pdf](references/Ipek%20et%20al.%20-%202008%20-%20Self-Optimizing%20Memory%20Controllers%20A%20Reinforcement%20Learning%20Approach.pdf) | 自优化内存控制器：强化学习方法 |
 
 ## 核心结论
 
-RE Store 的被动拦截机制（~18x hit 乘数，等效 ~14,400 周期的行保持时间）对热行保护已近最优，显式 timeout 升级在整体 benchmark 层面是冗余甚至有害的。
+GS 的 RE Store 被动拦截机制（~18x hit 乘数，等效 ~14,400 周期的行保持时间）对热行保护已近最优。当前研究方向是通过 ML/RL 方法（DYMPL、RL-PAGE）进一步提升 timeout 选择的精度和响应速度。
